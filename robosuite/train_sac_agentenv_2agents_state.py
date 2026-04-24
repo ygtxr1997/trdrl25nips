@@ -30,19 +30,24 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type = int, help = 'batch_size', default = 512)
     parser.add_argument('--hidden_units', type = int, help = 'hidden_units', default = 512)
     parser.add_argument('--seed', type = int, help = 'seed', default = 1)
-    parser.add_argument('--horizon', type = int, help = 'horizon', default = 500)
+    parser.add_argument('--horizon', type = int, help = 'max stpes', default = 500)
     parser.add_argument('--reward_shaping', type=str, default='true')
-    parser.add_argument('--n_demo', type = int, help = 'n_demo', default = 0)
+
+    parser.add_argument('--n_demo', type = int,
+                        help='num of demos to init replay buffer', default = 0)
     parser.add_argument('--demo_env', type=str, default = 'both') # both, env1, env2
+
     parser.add_argument('--use_forward_reward', type=str, default = 'false')
     parser.add_argument('--use_reversed_reward', type=str, default = 'false')
     parser.add_argument('--n_forward_demo', type = int, help = 'n_forward_demo', default = 10)
     parser.add_argument('--n_reverse_demo', type = int, help = 'n_reverse_demo', default = 10)
     parser.add_argument('--reward_model_type', type=str, default = 'reward') # reward, potential
     parser.add_argument('--potential_type', type=str, default = 'linear') # linear, triangular, geometric, original_geometric, constant
+
     parser.add_argument('--use_reversed_transition', type=str, default = 'false')
     parser.add_argument('--diff_threshold', type=float, default = 0.01)
-    parser.add_argument('--filter_type', type=str, default = 'None') # None, state_norm_direction, object_state_norm_direction, state_max_diff
+    parser.add_argument('--filter_type', type=str, default='None',
+                        help='TR-DRL uses `state_max_diff`') # None, state_norm_direction, object_state_norm_direction, state_max_diff
     args = vars(parser.parse_args())
 
     env1_name = args['env1_name']
@@ -52,7 +57,7 @@ if __name__ == '__main__':
     print('env_names', env_names)
     batch_size = args['batch_size']
     hidden_depth = 2
-    hidden_dim = args['hidden_dim']
+    hidden_dim = 512  # NOTE:args['hidden_dim']
     print('batch_size {} hidden_depth {} hidden_dim {}'.format(batch_size, hidden_depth, hidden_dim))
 
     seed = args['seed']
@@ -120,6 +125,7 @@ if __name__ == '__main__':
     if env1_name in ['NutAssemblyRound', 'NutDisAssemblyRound', 'Stack', 'UnStack']:
         success_threshold = 350
 
+    # [] Set Robots
     robots = 'Kinova3'
     controller_name = 'OSC_POSITION' # in ['JOINT_VELOCITY', 'JOINT_TORQUE', 'JOINT_POSITION', 'OSC_POSITION', 'OSC_POSE', 'IK_POSE']
     if env1_name in ['TwoArmPegInHole', 'TwoArmPegRemoval']:
@@ -134,6 +140,7 @@ if __name__ == '__main__':
     has_renderer = False # False
     has_offscreen_renderer = True #True
 
+    # [] Set Environments
     # initialize env1
     env1 = suite.make(
         env_name = env1_name, reward_shaping= reward_shaping, robots = robots, controller_configs = controller_configs,
@@ -158,6 +165,7 @@ if __name__ == '__main__':
         camera_names = camera_names, camera_heights = camera_heights, camera_widths = camera_widths
     )
 
+    # [] Set Agents
     # Get action size and action limits
     action_size = env1.action_dim
     action_low, action_high = env1.action_spec
@@ -241,6 +249,7 @@ if __name__ == '__main__':
                  hidden_dim, hidden_depth, log_std_bounds, 
                  demo_replay_buffer_size, reverse_replay_buffer_size, replay_buffer_size)
 
+    # [] Load demo transitions and create replay buffer
     for i_env in range(num_envs):
         if (demo_env == 'both' or (demo_env == 'env1' and i_env==0) or (demo_env=='env2' and i_env==1)):
             agent = agent1 if i_env == 0 else agent2
@@ -335,13 +344,18 @@ if __name__ == '__main__':
             else:
                 print('{} does not exist.'.format(transition_path))
 
+    # [] Get state_max and state_min for reversed transition filter
     # get state_max and state_min
     state_max = []
     state_min = []
     if use_reversed_transition:
         for i_env in range(num_envs):
             env_name = env_names[i_env]
-            transition_path = 'generate/{}_transitions_50trajectory_sparse.npy'.format(env_name)
+
+            # transition_path = 'generate/{}_transitions_50trajectory_sparse.npy'.format(env_name)
+            # 【修改1】使用实际传入的 n_demo 参数，而不是写死 50
+            transition_path = 'generate/{}_transitions_{}trajectory_sparse.npy'.format(env_name, n_demo)
+
             if os.path.exists(transition_path):
                 transitions = np.load(transition_path, allow_pickle=True)
                 state = transitions[:, 0]
@@ -349,6 +363,11 @@ if __name__ == '__main__':
                 state = np.concatenate(state, axis=0).reshape(-1, state_size)
                 state_max.append(np.max(state, axis=0)) 
                 state_min.append(np.min(state, axis=0))
+            else:
+                # 【修改2】增加兜底方案！如果连 n_demo 的文件也没找到，给一个默认值防止崩溃
+                print('Warning: {} does not exist. Using fallback state_max/min!'.format(transition_path))
+                state_max.append(1)  # 默认最大值
+                state_min.append(0)  # 默认最小值
                 
         print('state_max {}'.format(state_max))
         print('state_min {}'.format(state_min))
@@ -356,6 +375,7 @@ if __name__ == '__main__':
         state_max = [0, 1]
         state_min = [0, 1]
 
+    # [] Forward and reversed reward shaping
     if use_forward_reward:
         for i_env in range(num_envs):
             reward_trajectory_lengths = []
@@ -572,6 +592,7 @@ if __name__ == '__main__':
                     reverse_reward_loss = agent.update_potential(type='reverse')
             print('reverse_reward_loss {} update {:.2f} seconds'.format(reverse_reward_loss, time.time() - update_start))
 
+    # [] Main loop for training and evaluation
     score_history = []
     success_history = []
     i = 0
@@ -668,7 +689,7 @@ if __name__ == '__main__':
 
                     i_test += 1
         
-        # train
+        # [] train and SAC updates
         for i_env in range(num_envs):
             # if i_env == 0: continue
             env_name = env_names[i_env]
@@ -784,7 +805,7 @@ if __name__ == '__main__':
 
                 obs, state, agent_state, env_state = next_obs, next_state, next_agent_state, next_env_state
             
-            # store transitions of this episode to the replay buffer
+            # [] store transitions of this episode to the replay buffer
             for i_sample in range(len(state_this_episode)):
                 state, agent_state, env_state, act, reward, next_state, next_agent_state, next_env_state, done_no_max = state_this_episode[i_sample], agent_state_this_episode[i_sample], env_state_this_episode[i_sample], act_this_episode[i_sample], reward_this_episode[i_sample], next_state_this_episode[i_sample], next_agent_state_this_episode[i_sample], next_env_state_this_episode[i_sample], done_no_max_this_episode[i_sample]
                 agent.remember(state, agent_state, env_state, act, reward, next_state, next_agent_state, next_env_state, done_no_max)

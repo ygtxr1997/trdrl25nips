@@ -268,6 +268,91 @@ class SACAgent(object):
         self.actor.eval()
         self.critic.eval()
 
+    @staticmethod
+    def _count_parameters(module, trainable_only=True):
+        if trainable_only:
+            return sum(p.numel() for p in module.parameters() if p.requires_grad)
+        return sum(p.numel() for p in module.parameters())
+
+    @staticmethod
+    def _format_param_count(num_params):
+        num_params = float(num_params)
+        if num_params < 1e3:
+            return str(int(num_params))
+        if num_params < 1e6:
+            return "{:.2f}K".format(num_params / 1e3)
+        if num_params < 1e9:
+            return "{:.2f}M".format(num_params / 1e6)
+        if num_params < 1e12:
+            return "{:.2f}B".format(num_params / 1e9)
+        return "{:.2f}T".format(num_params / 1e12)
+
+    def show_key_module_params(self, trainable_only=True, include_critic_target=False, print_table=True):
+        """
+        Print and return parameter counts of key SAC modules.
+        """
+        module_pairs = [
+            ("actor", self.actor),
+            ("critic", self.critic),
+            ("forward_reward", self.forward_reward),
+            ("reverse_reward", self.reverse_reward),
+            ("forward_potential", self.forward_potential),
+            ("reverse_potential", self.reverse_potential),
+            ("forward_dynamics", self.forward_dynamics),
+            ("inverse_dynamics", self.inverse_dynamics),
+        ]
+        if include_critic_target:
+            module_pairs.append(("critic_target", self.critic_target))
+
+        stats_raw = {}
+        total = 0
+        for module_name, module in module_pairs:
+            cnt = self._count_parameters(module, trainable_only=trainable_only)
+            stats_raw[module_name] = int(cnt)
+            total += cnt
+
+        alpha_cnt = int(bool(self.log_alpha.requires_grad)) if trainable_only else 1
+        stats_raw["log_alpha"] = alpha_cnt
+        total += alpha_cnt
+        stats_raw["total"] = int(total)
+
+        summary = {}
+        for k, v in stats_raw.items():
+            summary[k] = {
+                "count": int(v),
+                "readable": self._format_param_count(v),
+            }
+
+        if print_table:
+            mode = "trainable" if trainable_only else "all"
+            print("\n=== SACAgent key-module params ({}) ===".format(mode))
+            for module_name, _ in module_pairs:
+                info = summary[module_name]
+                print("{:<18s}: {:>8s} ({})".format(
+                    module_name, info["readable"], info["count"]
+                ))
+            print("{:<18s}: {:>8s} ({})".format(
+                "log_alpha", summary["log_alpha"]["readable"], summary["log_alpha"]["count"]
+            ))
+            print("{:<18s}: {:>8s} ({})".format(
+                "total", summary["total"]["readable"], summary["total"]["count"]
+            ))
+
+        """
+        === SACAgent key-module params (trainable) ===
+        actor             :  279.56K (279560)
+        critic            :  556.03K (556034)
+        forward_reward    :  282.11K (282113)
+        reverse_reward    :  282.11K (282113)
+        forward_potential :  272.90K (272897)
+        reverse_potential :  272.90K (272897)
+        forward_dynamics  :  289.82K (289816)
+        inverse_dynamics  :  289.80K (289796)
+        log_alpha         :        1 (1)
+        total             :    2.53M (2525227)
+        """
+        return summary
+
     def sample_replay_buffer(self, replay_buffer, batch_size):
         states, agent_states, env_states, actions, rewards, new_states, new_agent_states, new_env_states, not_dones = replay_buffer.sample(batch_size)
         states = torch.as_tensor(states, device=self.device).float()

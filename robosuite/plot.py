@@ -185,5 +185,5 @@ if __name__ == '__main__':
             
     plt.subplots_adjust(hspace = 0.3)
     plt.show()
-    # plt.savefig('plots/{}_{}'.format(env_names[0], env_names[1]))
+    plt.savefig('plots/{}_{}'.format(env_names[0], env_names[1]))
     # plt.close()
